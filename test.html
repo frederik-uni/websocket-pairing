@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>WebSocket Tool</title>
+    </head>
+    <body>
+        <h1>WebSocket Tool</h1>
+        <label for="action">Action:</label>
+        <input type="number" id="action" min="0" max="255" /><br /><br />
+
+        <label for="secret">Secret (optional):</label>
+        <input type="text" id="secret" /><br /><br />
+
+        <button onclick="sendMessage()">Send Message</button>
+
+        <p id="status"></p>
+
+        <script>
+            let ws;
+
+            function connectWebSocket() {
+                ws = new WebSocket("ws://127.0.0.1:9001");
+
+                ws.onopen = function () {
+                    document.getElementById("status").textContent =
+                        "Connected to WebSocket server.";
+                };
+
+                ws.onmessage = function (event) {
+                    console.log("Message received from server: ", event.data);
+                };
+
+                ws.onclose = function () {
+                    document.getElementById("status").textContent =
+                        "Disconnected from WebSocket server.";
+                };
+
+                ws.onerror = function (error) {
+                    console.error("WebSocket error: ", error);
+                    document.getElementById("status").textContent =
+                        "WebSocket error.";
+                };
+            }
+
+            function sendMessage() {
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    connectWebSocket();
+                }
+
+                const action = document.getElementById("action").value;
+                const secret = document.getElementById("secret").value || null;
+
+                const message = {
+                    action: parseInt(action, 10),
+                    secret: secret,
+                };
+
+                ws.send(JSON.stringify(message));
+                document.getElementById("status").textContent = "Message sent.";
+            }
+
+            window.onload = connectWebSocket;
+        </script>
+    </body>
+</html>
