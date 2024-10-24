@@ -52,8 +52,8 @@ pub enum Codes {
     NoSession = 7,
 }
 
-async fn close_session(session: &Option<Arc<Mutex<Session>>>) {
-    if let Some(session) = session {
+async fn close_session(session: &mut Option<Arc<Mutex<Session>>>) {
+    if let Some(session) = session.take() {
         let _ = session
             .lock()
             .await
@@ -81,7 +81,7 @@ async fn handle_connection(
             if let Ok(action) = serde_json::from_str::<Action>(&text) {
                 match action.action {
                     0 => {
-                        close_session(&session).await;
+                        close_session(&mut session).await;
                         let v = sessions.open.lock().await.pop_front();
                         match v {
                             Some(ses) => {
@@ -112,11 +112,11 @@ async fn handle_connection(
                             }
                         }
                     }
-                    1 | 2 | 3 | 5 | 7 | 8 | 9 => {
+                    1 | 2 | 3 | 5 | 7 | 8 => {
                         continue;
                     }
                     4 => {
-                        close_session(&session).await;
+                        close_session(&mut session).await;
                         let mut ses = Session::public(ws_sender.clone());
                         let secret: String = rand::thread_rng()
                             .sample_iter(&Alphanumeric)
@@ -136,7 +136,7 @@ async fn handle_connection(
                         sessions.closed.lock().await.insert(secret, ses);
                     }
                     6 => {
-                        close_session(&session).await;
+                        close_session(&mut session).await;
                         let key = action.secret.unwrap_or_default();
                         let value = sessions.closed.lock().await.remove(&key);
                         match value {
@@ -166,6 +166,7 @@ async fn handle_connection(
                             }
                         }
                     }
+                    9 => close_session(&mut session).await,
                     _ => {
                         if let Some(session) = &session {
                             match host {
@@ -220,7 +221,7 @@ async fn handle_connection(
         }
     }
 
-    close_session(&session).await;
+    close_session(&mut session).await;
     Ok(())
 }
 
