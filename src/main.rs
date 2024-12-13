@@ -1,6 +1,13 @@
+#[cfg(feature = "proxy")]
+mod bore;
+
 use std::collections::{HashMap, VecDeque};
+#[cfg(feature = "proxy")]
+use std::env::args;
 use std::sync::Arc;
 
+#[cfg(feature = "proxy")]
+use bore::Client;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use rand::distributions::Alphanumeric;
@@ -273,6 +280,20 @@ impl Session {
 
 #[tokio::main]
 async fn main() {
+    #[cfg(feature = "proxy")]
+    let args = args().collect::<Vec<_>>();
+    #[cfg(feature = "proxy")]
+    if let Some(v) = args.get(1) {
+        if v.to_lowercase().trim() == "proxy" {
+            let client = Client::new("127.0.0.1", 9001, "bore.pub", 0, None)
+                .await
+                .unwrap();
+            let port = client.remote_port();
+            println!("Opend on bore.pub:{port}");
+            tokio::spawn(async move { client.listen().await });
+        }
+    }
+    println!("Opend on 127.0.0.1:9001");
     let listener = TcpListener::bind("127.0.0.1:9001")
         .await
         .expect("Can't bind to address");
