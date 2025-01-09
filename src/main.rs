@@ -24,6 +24,140 @@ struct Action {
     secret: Option<String>,
 }
 
+type MySession = Option<Arc<Mutex<Session>>>;
+type WsSender = Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>;
+type MyHost = Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>;
+
+impl Action {
+    async fn run(
+        &self,
+        host: &mut bool,
+        session: &mut MySession,
+        sessions: &Arc<Sessions>,
+        ws_sender: &WsSender,
+        text: String,
+    ) -> bool {
+        match self.action {
+            0 => {
+                close_session(session).await;
+                let v = sessions.open.lock().await.pop_front();
+                match v {
+                    Some(ses) => {
+                        ses.lock().await.set_sec(ws_sender.clone());
+                        let _ = ses
+                            .as_ref()
+                            .lock()
+                            .await
+                            .send_message_to_host("{action: 3}".to_owned())
+                            .await;
+                        let _ = ses
+                            .as_ref()
+                            .lock()
+                            .await
+                            .send_message_to_sec("{action: 2}".to_owned())
+                            .await;
+                        *session = Some(ses);
+                        *host = false;
+                        false
+                    }
+                    None => {
+                        let mut ses = Session::public(ws_sender.clone());
+                        let _ = ses.send_message_to_host("{action: 1}".to_owned()).await;
+                        let ses = Arc::new(Mutex::new(ses));
+                        *session = Some(ses.clone());
+                        *host = true;
+
+                        sessions.open.lock().await.push_back(ses);
+                        false
+                    }
+                }
+            }
+            1 | 2 | 3 | 5 | 7 | 8 => true,
+            4 => {
+                close_session(session).await;
+                let mut ses = Session::public(ws_sender.clone());
+                let secret: String = rand::thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(6)
+                    .map(char::from)
+                    .collect();
+                let _ = ses
+                    .send_message_to_host(format!("{}action: 5, secret: \"{secret}\"{}", '{', '}'))
+                    .await;
+                let ses = Arc::new(Mutex::new(ses));
+
+                *session = Some(ses.clone());
+                *host = true;
+                sessions.closed.lock().await.insert(secret, ses);
+                false
+            }
+            6 => {
+                close_session(session).await;
+                let key = self.secret.clone().unwrap_or_default();
+                let value = sessions.closed.lock().await.remove(&key);
+                match value {
+                    Some(ses) => {
+                        ses.lock().await.set_sec(ws_sender.clone());
+                        let _ = ses
+                            .as_ref()
+                            .lock()
+                            .await
+                            .send_message_to_host("{action: 3}".to_owned())
+                            .await;
+                        let _ = ses
+                            .as_ref()
+                            .lock()
+                            .await
+                            .send_message_to_sec("{action: 2}".to_owned())
+                            .await;
+                        *session = Some(ses);
+                        *host = false;
+                    }
+                    None => {
+                        let _ = ws_sender
+                            .lock()
+                            .await
+                            .send(Message::Text("{action: 8}".to_owned()))
+                            .await;
+                    }
+                }
+                false
+            }
+            9 => {
+                close_session(session).await;
+                false
+            }
+            _ => {
+                if let Some(session) = &session {
+                    match host {
+                        true => {
+                            let _ = session
+                                .lock()
+                                .await
+                                .send_message_to_sec(text.to_string())
+                                .await;
+                        }
+                        false => {
+                            let _ = session
+                                .lock()
+                                .await
+                                .send_message_to_host(text.to_string())
+                                .await;
+                        }
+                    }
+                } else {
+                    let _ = ws_sender
+                        .lock()
+                        .await
+                        .send(Message::Text("{action: 7}".to_owned()))
+                        .await;
+                }
+                false
+            }
+        }
+    }
+}
+
 /// Dont handle CloseConnection to strictly as there can come connections after it
 #[allow(unused)]
 pub enum Codes {
@@ -86,120 +220,11 @@ async fn handle_connection(
     while let Some(msg) = ws_receiver.next().await {
         if let Ok(Ok(text)) = msg.map(|v| v.to_text().map(|v| v.to_string())) {
             if let Ok(action) = serde_json::from_str::<Action>(&text) {
-                match action.action {
-                    0 => {
-                        close_session(&mut session).await;
-                        let v = sessions.open.lock().await.pop_front();
-                        match v {
-                            Some(ses) => {
-                                ses.lock().await.set_sec(ws_sender.clone());
-                                let _ = ses
-                                    .as_ref()
-                                    .lock()
-                                    .await
-                                    .send_message_to_host("{action: 3}".to_owned())
-                                    .await;
-                                let _ = ses
-                                    .as_ref()
-                                    .lock()
-                                    .await
-                                    .send_message_to_sec("{action: 2}".to_owned())
-                                    .await;
-                                session = Some(ses);
-                                host = false;
-                            }
-                            None => {
-                                let mut ses = Session::public(ws_sender.clone());
-                                let _ = ses.send_message_to_host("{action: 1}".to_owned()).await;
-                                let ses = Arc::new(Mutex::new(ses));
-                                session = Some(ses.clone());
-                                host = true;
-
-                                sessions.open.lock().await.push_back(ses);
-                            }
-                        }
-                    }
-                    1 | 2 | 3 | 5 | 7 | 8 => {
-                        continue;
-                    }
-                    4 => {
-                        close_session(&mut session).await;
-                        let mut ses = Session::public(ws_sender.clone());
-                        let secret: String = rand::thread_rng()
-                            .sample_iter(&Alphanumeric)
-                            .take(6)
-                            .map(char::from)
-                            .collect();
-                        let _ = ses
-                            .send_message_to_host(format!(
-                                "{}action: 5, secret: \"{secret}\"{}",
-                                '{', '}'
-                            ))
-                            .await;
-                        let ses = Arc::new(Mutex::new(ses));
-
-                        session = Some(ses.clone());
-                        host = true;
-                        sessions.closed.lock().await.insert(secret, ses);
-                    }
-                    6 => {
-                        close_session(&mut session).await;
-                        let key = action.secret.unwrap_or_default();
-                        let value = sessions.closed.lock().await.remove(&key);
-                        match value {
-                            Some(ses) => {
-                                ses.lock().await.set_sec(ws_sender.clone());
-                                let _ = ses
-                                    .as_ref()
-                                    .lock()
-                                    .await
-                                    .send_message_to_host("{action: 3}".to_owned())
-                                    .await;
-                                let _ = ses
-                                    .as_ref()
-                                    .lock()
-                                    .await
-                                    .send_message_to_sec("{action: 2}".to_owned())
-                                    .await;
-                                session = Some(ses);
-                                host = false;
-                            }
-                            None => {
-                                let _ = ws_sender
-                                    .lock()
-                                    .await
-                                    .send(Message::Text("{action: 8}".to_owned()))
-                                    .await;
-                            }
-                        }
-                    }
-                    9 => close_session(&mut session).await,
-                    _ => {
-                        if let Some(session) = &session {
-                            match host {
-                                true => {
-                                    let _ = session
-                                        .lock()
-                                        .await
-                                        .send_message_to_sec(text.to_string())
-                                        .await;
-                                }
-                                false => {
-                                    let _ = session
-                                        .lock()
-                                        .await
-                                        .send_message_to_host(text.to_string())
-                                        .await;
-                                }
-                            }
-                        } else {
-                            let _ = ws_sender
-                                .lock()
-                                .await
-                                .send(Message::Text("{action: 7}".to_owned()))
-                                .await;
-                        }
-                    }
+                if action
+                    .run(&mut host, &mut session, &sessions, &ws_sender, text)
+                    .await
+                {
+                    continue;
                 }
             } else if let Some(session) = &session {
                 match host {
@@ -239,19 +264,19 @@ struct Sessions {
 }
 
 struct Session {
-    sender_host: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
-    sender_sec: Option<Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>>,
+    sender_host: MyHost,
+    sender_sec: Option<WsSender>,
 }
 
 impl Session {
-    fn public(host: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>) -> Self {
+    fn public(host: MyHost) -> Self {
         Self {
             sender_host: host,
             sender_sec: None,
         }
     }
 
-    fn set_sec(&mut self, sender: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>) {
+    fn set_sec(&mut self, sender: WsSender) {
         self.sender_sec = Some(sender);
     }
 
