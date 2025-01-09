@@ -1,7 +1,7 @@
 # Docs
 ### Dev
 install & run: `https://www.rust-lang.org/learn/get-started`
-official rust docs: `https://doc.rust-lang.org/cargo/getting-started/index.html`
+official rust docs: `https://doc.rust-lang.org/book/ch01-03-hello-cargo.html `
 
 ##### How to use?
 - send json with this pattern `{id: u8, ...}`
